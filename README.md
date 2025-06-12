@@ -8,8 +8,7 @@ Bugs
 Unsafe functions
 Security issues
 POSIX compliance
-MISRA C:2023 compliance
-
+SEI CERT C standard
 The program uses:
 
 libcurl for HTTP requests
