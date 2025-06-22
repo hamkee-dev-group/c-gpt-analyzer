@@ -217,7 +217,11 @@ int main(int argc, char **argv)
     size_t len = 0;
     ssize_t nread;
     char *source_code;
-    const char question[] = "Analyze the C code for bugs, unsafe functions, security issues, POSIX compliance and SEI CERT standard. Provide a detailed report. Here is the code:\n\n";
+    const char question[] = "Analyze the C code for bugs, unsafe functions, security issues, POSIX compliance and SEI CERT standard.\n"
+                            "Check for memory leaks, buffer overflows, and other common vulnerabilities.\n"
+                            "Check for every function return.\n"
+                            "Check for proper error handling and resource management.\n"
+                            "Provide a detailed report. Here is the code:\n\n";
 
     cJSON *root;
     cJSON *messages;
