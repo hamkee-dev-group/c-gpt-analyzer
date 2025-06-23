@@ -35,14 +35,43 @@ static size_t WriteMemoryCallback(void *contents, size_t size, size_t nmemb, voi
 
     return realsize;
 }
+char *run_analysis_tool(const char *cmd)
+{
+    FILE *fp;
+    char *output = NULL;
+    size_t size = 0;
+    char buffer[512];
 
+    fp = popen(cmd, "r");
+    if (!fp)
+        return strdup("ERROR running command.\n");
+
+    while (fgets(buffer, sizeof(buffer), fp))
+    {
+        size_t len = strlen(buffer);
+        char *tmp = realloc(output, size + len + 1);
+        if (!tmp)
+        {
+            free(output);
+            pclose(fp);
+            return strdup("ERROR reallocating output.\n");
+        }
+        output = tmp;
+        memcpy(output + size, buffer, len);
+        size += len;
+        output[size] = '\0';
+    }
+
+    pclose(fp);
+    return output ? output : strdup("No output.\n");
+}
 char *read_c_file_without_comments(const char *filename)
 {
     FILE *fp;
     long fsize;
     char *input;
     char *output;
-    char *p_in; 
+    char *p_in;
     char *p_out;
 
     enum
@@ -217,12 +246,8 @@ int main(int argc, char **argv)
     size_t len = 0;
     ssize_t nread;
     char *source_code;
-    const char question[] = "Analyze the C code for bugs, unsafe functions, security issues, POSIX compliance and SEI CERT standard.\n"
-                            "Check for memory leaks, buffer overflows, and other common vulnerabilities.\n"
-                            "Check for every function return.\n"
-                            "Check for proper error handling and resource management.\n"
-                            "Provide a detailed report. Here is the code:\n\n";
 
+    char tool_cmd[1024];
     cJSON *root;
     cJSON *messages;
     cJSON *message;
@@ -238,6 +263,8 @@ int main(int argc, char **argv)
     struct MemoryStruct chunk;
     char auth_header[256];
     char *prompt;
+    char *cppcheck_output, *flawfinder_output, *clangtidy_output, *clang_output, *smatch_output;
+
     if (argc != 2)
     {
         fprintf(stderr, "Usage: %s <source_file.c>\n", argv[0]);
@@ -264,27 +291,94 @@ int main(int argc, char **argv)
     if (!source_code)
     {
         free(api_key);
-        fprintf(stderr, "Error reading source file.\n"); 
+        fprintf(stderr, "Error reading source file.\n");
         return 1;
     }
     source_code_size = strlen(source_code);
-    if(source_code_size + strlen(question) + 8  > MAX_MODEL_SIZE)
+
+    snprintf(tool_cmd, sizeof(tool_cmd), "cppcheck --enable=all --suppress=missingIncludeSystem --quiet --quiet %s 2>&1", argv[1]);
+    cppcheck_output = run_analysis_tool(tool_cmd);
+
+    snprintf(tool_cmd, sizeof(tool_cmd), "flawfinder --dataonly --quiet  %s 2>&1", argv[1]);
+    flawfinder_output = run_analysis_tool(tool_cmd);
+
+    snprintf(tool_cmd, sizeof(tool_cmd), "clang-tidy -checks=-*,performance-*,portability-*,cert-*,concurrency-* %s 2>&1", argv[1]);
+    clangtidy_output = run_analysis_tool(tool_cmd);
+
+    snprintf(tool_cmd, sizeof(tool_cmd), "clang --analyze %s 2>&1", argv[1]);
+    clang_output = run_analysis_tool(tool_cmd);
+
+    snprintf(tool_cmd, sizeof(tool_cmd), "smatch %s 2>&1", argv[1]);
+    smatch_output = run_analysis_tool(tool_cmd);
+
+    // Compose enhanced question with static analysis
+    const char *analysis_intro =
+        "Analyze the C code for bugs, unsafe functions, security issues, POSIX compliance and SEI CERT standard.\n"
+        "Check for memory leaks, buffer overflows, and other common vulnerabilities.\n"
+        "Check for every function return.\n"
+        "Check for proper error handling and resource management.\n\n"
+        "Below is the result of various static analysis tools. Use this to assist your review:\n\n"
+        "### cppcheck output:\n%s\n\n"
+        "### flawfinder output:\n%s\n\n"
+        "### clang-tidy output:\n%s\n\n"
+        "### clang --analyze output:\n%s\n\n"
+        "### smatch output:\n%s\n\n"
+        "Now analyze the code:\n\n";
+
+    size_t total_question_size = strlen(analysis_intro) + strlen(cppcheck_output) + strlen(flawfinder_output) + strlen(clangtidy_output) + strlen(clang_output) + strlen(smatch_output) + 1024;
+
+    char *full_question = malloc(total_question_size);
+    if (!full_question)
     {
+        fprintf(stderr, "Failed to allocate memory for full question.\n");
         free(api_key);
         free(source_code);
-        fprintf(stderr, "Source code is too large for the model.\n");
+        free(cppcheck_output);
+        free(flawfinder_output);
+        free(clangtidy_output);
+        free(clang_output);
+        free(smatch_output);
         return 1;
     }
-    prompt = malloc(source_code_size + strlen(question) + 8);
+
+    snprintf(full_question, total_question_size, analysis_intro,
+             cppcheck_output, flawfinder_output, clangtidy_output, clang_output, smatch_output);
+
+    // Now build the prompt
+    size_t full_prompt_size = strlen(full_question) + strlen(source_code) + 16;
+    prompt = malloc(full_prompt_size);
     if (!prompt)
     {
         fprintf(stderr, "Memory allocation failed for prompt.\n");
+        free(full_question);
         free(api_key);
         free(source_code);
+        free(cppcheck_output);
+        free(flawfinder_output);
+        free(clangtidy_output);
+        free(clang_output);
+        free(smatch_output);
         return 1;
     }
-    snprintf(prompt, source_code_size + strlen(question) + 8, "%s```\n%s\n```", question, source_code);
+    snprintf(prompt, full_prompt_size, "%s```\n%s\n```", full_question, source_code);
 
+    // Clean up static tool outputs
+    free(cppcheck_output);
+    free(flawfinder_output);
+    free(clangtidy_output);
+    free(clang_output);
+    free(smatch_output);
+    free(full_question);
+    if (full_prompt_size > MAX_MODEL_SIZE)
+    {
+        free(api_key);
+        free(source_code);
+        free(prompt);
+        free(full_question);
+        fprintf(stderr, "Source code is too large for the model.\n");
+        return 1;
+    }
+    printf("%ld\n:%s", full_prompt_size, prompt);
     curl_global_init(CURL_GLOBAL_DEFAULT);
     curl = curl_easy_init();
     if (!curl)
@@ -292,6 +386,7 @@ int main(int argc, char **argv)
         free(api_key);
         free(source_code);
         free(prompt);
+        free(full_question);
         fprintf(stderr, "CURL initializaiton failed");
         return 1;
     }
@@ -351,6 +446,7 @@ int main(int argc, char **argv)
     free(chunk.memory);
     free(source_code);
     free(json_data);
+    free(full_question);
     cJSON_Delete(root);
 
     curl_global_cleanup();
