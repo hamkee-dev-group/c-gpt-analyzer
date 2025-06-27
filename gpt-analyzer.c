@@ -246,7 +246,8 @@ int main(int argc, char **argv)
     size_t len = 0;
     ssize_t nread;
     char *source_code;
-
+    FILE *outfp;
+    char outfile[384];
     char tool_cmd[1024];
     cJSON *root;
     cJSON *messages;
@@ -295,22 +296,30 @@ int main(int argc, char **argv)
         return 1;
     }
     source_code_size = strlen(source_code);
-
+    snprintf(outfile, sizeof(outfile), "%s.analysis.out", argv[1]);
+    outfp = fopen(outfile, "w+");
+    if (!outfp)
+    {
+        free(api_key);
+        free(source_code);
+        fprintf(stderr, "Error opening output file %s.\n", outfile);
+        return 1;
+    }
     snprintf(tool_cmd, sizeof(tool_cmd), "cppcheck --enable=all --suppress=missingIncludeSystem --quiet --quiet %s 2>&1", argv[1]);
     cppcheck_output = run_analysis_tool(tool_cmd);
-
+    fprintf(outfp, "cppcheck output:\n%s\n", cppcheck_output);
     snprintf(tool_cmd, sizeof(tool_cmd), "flawfinder --dataonly --quiet  %s 2>&1", argv[1]);
     flawfinder_output = run_analysis_tool(tool_cmd);
-
+    fprintf(outfp, "flawfinder output:\n%s\n", flawfinder_output);
     snprintf(tool_cmd, sizeof(tool_cmd), "clang-tidy -checks=-*,performance-*,portability-*,cert-*,concurrency-* %s 2>&1", argv[1]);
     clangtidy_output = run_analysis_tool(tool_cmd);
-
+    fprintf(outfp, "clang-tidy output:\n%s\n", clangtidy_output);
     snprintf(tool_cmd, sizeof(tool_cmd), "clang --analyze %s 2>&1", argv[1]);
     clang_output = run_analysis_tool(tool_cmd);
-
+    fprintf(outfp, "clang --analyze output:\n%s\n", clang_output);
     snprintf(tool_cmd, sizeof(tool_cmd), "smatch %s 2>&1", argv[1]);
     smatch_output = run_analysis_tool(tool_cmd);
-
+    fprintf(outfp, "smatch output:\n%s\n", smatch_output);
     // Compose enhanced question with static analysis
     const char *analysis_intro =
         "Analyze the C code for bugs, unsafe functions, security issues, POSIX compliance and SEI CERT standard.\n"
@@ -331,6 +340,7 @@ int main(int argc, char **argv)
     if (!full_question)
     {
         fprintf(stderr, "Failed to allocate memory for full question.\n");
+        fclose(outfp);
         free(api_key);
         free(source_code);
         free(cppcheck_output);
@@ -350,6 +360,7 @@ int main(int argc, char **argv)
     if (!prompt)
     {
         fprintf(stderr, "Memory allocation failed for prompt.\n");
+        fclose(outfp);
         free(full_question);
         free(api_key);
         free(source_code);
@@ -369,24 +380,23 @@ int main(int argc, char **argv)
     free(clang_output);
     free(smatch_output);
     free(full_question);
+    free(source_code);
+
     if (full_prompt_size > MAX_MODEL_SIZE)
     {
+        fclose(outfp);
         free(api_key);
-        free(source_code);
         free(prompt);
-        free(full_question);
         fprintf(stderr, "Source code is too large for the model.\n");
         return 1;
     }
-    printf("%ld\n:%s", full_prompt_size, prompt);
     curl_global_init(CURL_GLOBAL_DEFAULT);
     curl = curl_easy_init();
     if (!curl)
     {
         free(api_key);
-        free(source_code);
         free(prompt);
-        free(full_question);
+        fclose(outfp);
         fprintf(stderr, "CURL initializaiton failed");
         return 1;
     }
@@ -425,6 +435,7 @@ int main(int argc, char **argv)
             if (content)
             {
                 printf("\n=== ChatGPT Analysis ===\n%s\n", content->valuestring);
+                fprintf(outfp, "\n=== ChatGPT Analysis ===\n%s\n", content->valuestring);
             }
         }
         else
@@ -441,12 +452,11 @@ int main(int argc, char **argv)
 
     curl_slist_free_all(headers);
     curl_easy_cleanup(curl);
+    fclose(outfp);
     free(prompt);
     free(api_key);
     free(chunk.memory);
-    free(source_code);
     free(json_data);
-    free(full_question);
     cJSON_Delete(root);
 
     curl_global_cleanup();
